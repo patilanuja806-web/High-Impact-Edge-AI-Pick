@@ -1,73 +1,32 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime
 from backend.app.database import get_db
-from backend.app.models.camera import CameraNode
-from backend.app.models.sighting import VehicleSighting
-from backend.app.models.vehicle_track import VehicleTrajectorySegment
-from backend.app.schemas.analytics import CityTrafficAnalyticsResponse, CongestionMetric, OriginDestinationFlow
+from backend.app.services.traffic_analytics_service import TrafficAnalyticsService
+from backend.app.services.telemetry_monitor import TelemetryBandwidthMonitor
 
 router = APIRouter()
 
-@router.get("/metrics", response_model=CityTrafficAnalyticsResponse)
+@router.get("/metrics")
 def get_city_metrics(db: Session = Depends(get_db)):
-    cams = db.query(CameraNode).all()
-    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+    analytics_svc = TrafficAnalyticsService(db)
+    congestion_reports = analytics_svc.evaluate_junction_congestion()
+    od_matrix = analytics_svc.compute_origin_destination_matrix(time_window_hours=1)
+    bandwidth = TelemetryBandwidthMonitor.get_system_bandwidth_metrics(db)
 
-    congestion_list = []
-    for c in cams:
-        count = (
-            db.query(VehicleSighting)
-            .filter(VehicleSighting.camera_id == c.camera_id, VehicleSighting.timestamp >= one_hour_ago)
-            .count()
-        )
-        density_per_min = count / 60.0
-        status = "GREEN"
-        early_warn = False
-        if density_per_min > 8.0:
-            status = "RED"
-            early_warn = True
-        elif density_per_min > 4.0:
-            status = "ORANGE"
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "active_cameras": bandwidth["active_nodes"],
+        "congestion_map": congestion_reports,
+        "origin_destination_matrix": od_matrix,
+        "bandwidth_metrics": bandwidth
+    }
 
-        congestion_list.append(CongestionMetric(
-            junction_code=c.junction_code,
-            current_status=status,
-            vehicle_density_per_min=round(density_per_min, 1),
-            avg_speed_kmh=42.5,
-            early_bottleneck_warning=early_warn
-        ))
+@router.get("/telemetry/health")
+def get_telemetry_health(db: Session = Depends(get_db)):
+    return TelemetryBandwidthMonitor.get_system_bandwidth_metrics(db)
 
-    od_query = (
-        db.query(
-            VehicleTrajectorySegment.from_camera_id,
-            VehicleTrajectorySegment.to_camera_id,
-            func.count(VehicleTrajectorySegment.id).label("flow_count"),
-            func.avg(VehicleTrajectorySegment.speed_kmh).label("avg_spd")
-        )
-        .group_by(VehicleTrajectorySegment.from_camera_id, VehicleTrajectorySegment.to_camera_id)
-        .order_by(func.count(VehicleTrajectorySegment.id).desc())
-        .limit(5)
-        .all()
-    )
-
-    cam_map = {c.camera_id: c.name for c in cams}
-    flows = [
-        OriginDestinationFlow(
-            origin=cam_map.get(od[0], od[0]),
-            destination=cam_map.get(od[1], od[1]),
-            vehicle_count=od[2],
-            avg_transit_minutes=round(od[3] if od[3] else 2.5, 1)
-        )
-        for od in od_query
-    ]
-
-    total_today = db.query(VehicleSighting).count()
-    return CityTrafficAnalyticsResponse(
-        timestamp=datetime.utcnow().isoformat(),
-        active_cameras=len([c for c in cams if c.is_active]),
-        total_vehicles_detected_today=total_today,
-        congestion_map=congestion_list,
-        top_od_flows=flows
-    )
+@router.get("/density/geojson")
+def get_density_geojson(db: Session = Depends(get_db)):
+    analytics_svc = TrafficAnalyticsService(db)
+    return analytics_svc.generate_density_geojson()
