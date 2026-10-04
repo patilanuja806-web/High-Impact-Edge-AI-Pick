@@ -1,0 +1,11 @@
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+__pycache__/
+*.pyc
+.venv/
+backend.log
+*.db
+test_assets/videos/
+.env
