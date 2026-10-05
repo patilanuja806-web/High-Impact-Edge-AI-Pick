@@ -1,0 +1,48 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: netragati_redis
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.backend
+    container_name: netragati_backend
+    environment:
+      - DATABASE_URL=sqlite:///./netragati_local.db
+      - USE_SQLITE_FALLBACK=True
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netragati_ui
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  cam_node_a:
+    build:
+      context: .
+      dockerfile: edge/Dockerfile.edge
+    container_name: netragati_edge_cam_a
+    environment:
+      - CAMERA_ID=CAM_JNC_A
+      - BACKEND_INGEST_URL=http://backend:8000/api/v1/ingest/sighting
+      - BACKEND_HEARTBEAT_URL=http://backend:8000/api/v1/ingest/heartbeat
+      - VIDEO_SOURCE=test_assets/videos/camera_a_sector18.mp4
+    depends_on:
+      - backend
